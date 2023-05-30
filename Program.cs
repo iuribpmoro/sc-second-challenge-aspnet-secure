@@ -19,6 +19,9 @@ using System;
 // Import Path
 using System.IO;
 
+// Import CSRF Token
+using Microsoft.AspNetCore.Antiforgery;
+
 public class User
 {
     public Guid Id { get; set; }
@@ -56,6 +59,7 @@ public static class AuthenticationMiddlewareExtensions
 
 public class Startup
 {
+
     private static readonly List<User> users = new List<User>
     {
         new User { Id = Guid.NewGuid(), Name = "Alice", Email = "alice@example.com", Password = "password1" },
@@ -70,26 +74,38 @@ public class Startup
         new Product { Id = 3, Name = "Hat", Price = 15, Image = "hat.jpg" }
     };
 
-    public void ConfigureServices(IServiceCollection services)
-    {
-        services.AddRouting();
-        // Add session with cookie samesite none
-        services.AddSession(options =>
-        {
-            options.Cookie.SameSite = SameSiteMode.None;
-            options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
-        });
-        services.AddDistributedMemoryCache();
-    }
-
     private static bool IsWhitelisted(string path)
     {
         var whitelist = new[] { "/", "/login", "/public" };
         return whitelist.Contains(path);
     }
 
-    public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ILogger<Startup> logger)
+    private IAntiforgery antiforgery;
+
+    public void ConfigureServices(IServiceCollection services)
     {
+        services.AddRouting();
+        services.AddSession(options =>
+        {
+            // SameSite Strict para proteger contra CSRF
+            options.Cookie.SameSite = SameSiteMode.None;
+            options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+        });
+        services.AddDistributedMemoryCache();
+
+        // Adicionar serviço antiforgery para proteger contra CSRF
+        services.AddAntiforgery(options =>
+        {
+            options.FormFieldName = "__CSRF";
+            options.Cookie.Name = "CSRF-TOKEN";
+            options.SuppressXFrameOptionsHeader = false;
+        });
+    }
+
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ILogger<Startup> logger, IAntiforgery antiforgery)
+    {
+        this.antiforgery = antiforgery;
+
         if (env.IsDevelopment())
         {
             app.UseDeveloperExceptionPage();
@@ -154,17 +170,26 @@ public class Startup
 
                 if (user != null)
                 {
-                    var productsHtml = string.Join("", products.Select(p => $@"
+                    var productsHtml = string.Join("", products.Select(p =>
+                    {
+
+                        var tokenSet = antiforgery.GetAndStoreTokens(context);
+                        var token = tokenSet.RequestToken;
+
+                        return $@"
                         <li>
                             <img src=""/images?name={p.Image}"" alt=""{p.Name}"" width=""100"">
                             <h3>{p.Name}</h3>
                             <p>Price: ${p.Price}</p>
                             <form action=""/place-order"" method=""post"">
                                 <input type=""hidden"" name=""product_id"" value=""{p.Id}"">
+                                <input type=""hidden"" name=""__CSRF"" value=""{token}"">
                                 <button type=""submit"">Place Order</button>
                             </form>
                         </li>
-                    "));
+                    ";
+
+                    }));
 
                     return context.Response.WriteAsync($@"
                         <h1>Product Listing</h1>
@@ -209,14 +234,14 @@ public class Startup
                 return context.Response.SendFileAsync(filePath);
             });
 
-            endpoints.MapPost("/place-order", context =>
+            endpoints.MapPost("/place-order", async context =>
             {
                 var userIdString = context.Session.GetString("UserId");
 
                 if (string.IsNullOrEmpty(userIdString))
                 {
                     context.Response.Redirect("/");
-                    return System.Threading.Tasks.Task.CompletedTask;
+                    return;
                 }
 
                 var userId = Guid.Parse(userIdString);
@@ -225,25 +250,39 @@ public class Startup
 
                 if (user != null)
                 {
+                    // Validate the CSRF token
+                    var antiforgery = context.RequestServices.GetRequiredService<IAntiforgery>();
+
+                    var valid = await antiforgery.IsRequestValidAsync(context);
+
+                    if (!valid)
+                    {
+                        context.Response.StatusCode = 403;
+                        await context.Response.WriteAsync("CSRF validation failed");
+                        return;
+                    }
+
                     var product = products.Find(p => p.Id == productId);
 
                     if (product != null)
                     {
-                        return context.Response.WriteAsync($@"
+                        await context.Response.WriteAsync($@"
                             <h1>Order Placed</h1>
                             <p>Thank you for placing an order for {product.Name}.</p>
                         ");
+                        return;
                     }
                     else
                     {
                         context.Response.StatusCode = 404;
-                        return context.Response.WriteAsync("Product not found");
+                        await context.Response.WriteAsync("Product not found");
+                        return;
                     }
                 }
 
                 context.Response.Redirect("/");
-                return System.Threading.Tasks.Task.CompletedTask;
             });
+
         });
     }
 }
