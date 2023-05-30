@@ -88,7 +88,7 @@ public class Startup
         services.AddSession(options =>
         {
             // SameSite Strict para proteger contra CSRF
-            options.Cookie.SameSite = SameSiteMode.None;
+            options.Cookie.SameSite = SameSiteMode.Strict;
             options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
         });
         services.AddDistributedMemoryCache();
