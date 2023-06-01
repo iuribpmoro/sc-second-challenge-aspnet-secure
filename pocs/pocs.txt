@@ -4,7 +4,7 @@
 
 2. Tente acessar o link abaixo:
 
-http://localhost:3000/images?name=../secretFile.txt
+http://localhost:3000/images?name=../../secretFile.txt
 
 
 - Se não aparecer o conteúdo do arquivo com a senha do usuário, está resolvido!
